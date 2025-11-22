@@ -12,6 +12,7 @@ permissions:
 
 jobs:
   release:
+    if: github.repository == 'temporalio/cli'
     uses: ./.github/workflows/build-and-publish.yml
     with:
       publish: true
