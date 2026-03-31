@@ -822,9 +822,11 @@ commands:
         delete-version, set-current-version, or set-ramping-version.
       keywords:
         - worker deployment
+        - worker deployment create
         - worker deployment describe
         - worker deployment list
         - worker deployment delete
+        - worker deployment create-version
         - worker deployment describe-version
         - worker deployment set-current-version
         - worker deployment set-ramping-version
@@ -916,6 +918,79 @@ commands:
       - name: report-task-queue-stats
         type: bool
         description: Report stats for task queues that are present in this version.
+
+  - name: temporal worker deployment create-version
+    summary: Create a new Worker Deployment Version
+    description: |
+
+      Create a new Worker Deployment Version:
+
+      ```
+      temporal worker deployment create-version [options]
+      ```
+
+      Configure a Worker Deployment Version's compute configuration as needed.
+      For example, pass compute provider information for an AWS Lambda Function
+      that spawns a Worker in the Worker Deployment:
+
+      ```
+      temporal worker deployment create-version \
+          --namespace YourNamespaceName \
+          --deployment-name YourDeploymentName \
+          --build-id YourBuildID \
+          --aws-lambda-invoke LambdaFunctionARN
+      ```
+
+      Configure settings like the scaling algorithm the Temporal server should
+      use when scaling out and in the number of server-owned Workers for a Worker
+      Deployment Version:
+
+      ```
+      temporal worker deployment create-version \
+          --namespace YourNamespaceName \
+          --deployment-name YourDeploymentName \
+          --build-id YourBuildID \
+          --aws-lambda-invoke LambdaFunctionARN \
+          --scaler-algorithm "no-sync"
+      ```
+      
+      Note: This is an experimental feature and may change in the future.
+    option-sets:
+      - deployment-version
+    options:
+      - name: aws-lambda-invoke
+        type: string
+        description: |
+          Qualified (contains version suffix) or Unqualified AWS Lambda
+          Function ARN to invoke when there are no active pollers for task
+          queue targets in the Worker Deployment.
+      - name: aws-lambda-assume-role
+        type: string
+        description: |
+          AWS IAM Role ARN that the Temporal server will assume when invoking
+          the Lambda Function that spawns a new Worker in this Worker
+          Deployment Version.
+      - name: aws-lambda-assume-role-external-id
+        type: string
+        description: |
+          When not empty, Temporal server will enforce that the AWS IAM Trust
+          Policy associated with the AWS IAM Role specified in
+          --aws-lambda-assume-role has an aws:ExternalId condition that matches
+          the supplied value.
+      - name: scaler-algorithm
+        type: string
+        description: |
+          The scaling algorithm the Temporal server will use to scale out and
+          in the set of Workers in this Worker Deployment Version when using
+          server-managed Workers.
+
+          Accepted values are 'no-sync' (default).
+
+          The 'no-sync' scaling algorithm scales up the number of server-owned
+          Workers in this Worker Deployment Version when the server finds no
+          active pollers against the task queue associated with the Worker
+          Deployment Version.
+        default: no-sync
 
   - name: temporal worker deployment delete-version
     summary: Delete a Worker Deployment Version

@@ -8,6 +8,7 @@ import (
 	"github.com/temporalio/cli/internal/printer"
 	deploymentpb "go.temporal.io/api/deployment/v1"
 	"go.temporal.io/api/enums/v1"
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/taskqueue/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
@@ -101,6 +102,32 @@ func taskQueueTypeToStr(taskQueueType client.TaskQueueType) (string, error) {
 		return "nexus", nil
 	default:
 		return "", fmt.Errorf("unrecognized task queue type: %d", taskQueueType)
+	}
+}
+
+func taskQueueTypeStrToProto(t string) enumspb.TaskQueueType {
+	switch t {
+	case "workflow":
+		return enumspb.TASK_QUEUE_TYPE_WORKFLOW
+	case "activity":
+		return enumspb.TASK_QUEUE_TYPE_ACTIVITY
+	case "nexus":
+		return enumspb.TASK_QUEUE_TYPE_NEXUS
+	default:
+		return enumspb.TASK_QUEUE_TYPE_UNSPECIFIED
+	}
+}
+
+func taskQueueTypeStrFromProto(t enumspb.TaskQueueType) string {
+	switch t {
+	case enumspb.TASK_QUEUE_TYPE_WORKFLOW:
+		return "workflow"
+	case enumspb.TASK_QUEUE_TYPE_ACTIVITY:
+		return "activity"
+	case enumspb.TASK_QUEUE_TYPE_NEXUS:
+		return "nexus"
+	default:
+		return "unspecified"
 	}
 }
 

@@ -2868,6 +2868,7 @@ func NewTemporalWorkerDeploymentCommand(cctx *CommandContext, parent *TemporalWo
 		s.Command.Long = "Deployment commands perform operations on Worker Deployments:\n\n```\ntemporal worker deployment [command] [options]\n```\n\nFor example:\n\n```\ntemporal worker deployment list\n```\n\nLists the Deployments in the client's namespace.\n\nArguments can be Worker Deployment Versions associated with\na Deployment, specified using the Deployment name and Build ID.\n\nFor example:\n\n```\ntemporal worker deployment set-current-version \\\n         --deployment-name YourDeploymentName --build-id YourBuildID\n```\n\nSets the current Deployment Version for a given Deployment."
 	}
 	s.Command.Args = cobra.NoArgs
+	s.Command.AddCommand(&NewTemporalWorkerDeploymentCreateVersionCommand(cctx, &s).Command)
 	s.Command.AddCommand(&NewTemporalWorkerDeploymentDeleteCommand(cctx, &s).Command)
 	s.Command.AddCommand(&NewTemporalWorkerDeploymentDeleteVersionCommand(cctx, &s).Command)
 	s.Command.AddCommand(&NewTemporalWorkerDeploymentDescribeCommand(cctx, &s).Command)
@@ -2877,6 +2878,41 @@ func NewTemporalWorkerDeploymentCommand(cctx *CommandContext, parent *TemporalWo
 	s.Command.AddCommand(&NewTemporalWorkerDeploymentSetCurrentVersionCommand(cctx, &s).Command)
 	s.Command.AddCommand(&NewTemporalWorkerDeploymentSetRampingVersionCommand(cctx, &s).Command)
 	s.Command.AddCommand(&NewTemporalWorkerDeploymentUpdateVersionMetadataCommand(cctx, &s).Command)
+	return &s
+}
+
+type TemporalWorkerDeploymentCreateVersionCommand struct {
+	Parent  *TemporalWorkerDeploymentCommand
+	Command cobra.Command
+	DeploymentVersionOptions
+	AwsLambdaInvoke               string
+	AwsLambdaAssumeRole           string
+	AwsLambdaAssumeRoleExternalId string
+	ScalerAlgorithm               string
+}
+
+func NewTemporalWorkerDeploymentCreateVersionCommand(cctx *CommandContext, parent *TemporalWorkerDeploymentCommand) *TemporalWorkerDeploymentCreateVersionCommand {
+	var s TemporalWorkerDeploymentCreateVersionCommand
+	s.Parent = parent
+	s.Command.DisableFlagsInUseLine = true
+	s.Command.Use = "create-version [flags]"
+	s.Command.Short = "Create a new Worker Deployment Version"
+	if hasHighlighting {
+		s.Command.Long = "\nCreate a new Worker Deployment Version:\n\n\x1b[1mtemporal worker deployment create-version [options]\x1b[0m\n\nConfigure a Worker Deployment Version's compute configuration as needed.\nFor example, pass compute provider information for an AWS Lambda Function\nthat spawns a Worker in the Worker Deployment:\n\n\x1b[1mtemporal worker deployment create-version \\\n    --namespace YourNamespaceName \\\n    --deployment-name YourDeploymentName \\\n    --build-id YourBuildID \\\n    --aws-lambda-invoke LambdaFunctionARN\x1b[0m\n\nConfigure settings like the scaling algorithm the Temporal server should\nuse when scaling out and in the number of server-owned Workers for a Worker\nDeployment Version:\n\n\x1b[1mtemporal worker deployment create-version \\\n    --namespace YourNamespaceName \\\n    --deployment-name YourDeploymentName \\\n    --build-id YourBuildID \\\n    --aws-lambda-invoke LambdaFunctionARN \\\n    --scaler-algorithm \"no-sync\"\x1b[0m\n\nNote: This is an experimental feature and may change in the future."
+	} else {
+		s.Command.Long = "\nCreate a new Worker Deployment Version:\n\n```\ntemporal worker deployment create-version [options]\n```\n\nConfigure a Worker Deployment Version's compute configuration as needed.\nFor example, pass compute provider information for an AWS Lambda Function\nthat spawns a Worker in the Worker Deployment:\n\n```\ntemporal worker deployment create-version \\\n    --namespace YourNamespaceName \\\n    --deployment-name YourDeploymentName \\\n    --build-id YourBuildID \\\n    --aws-lambda-invoke LambdaFunctionARN\n```\n\nConfigure settings like the scaling algorithm the Temporal server should\nuse when scaling out and in the number of server-owned Workers for a Worker\nDeployment Version:\n\n```\ntemporal worker deployment create-version \\\n    --namespace YourNamespaceName \\\n    --deployment-name YourDeploymentName \\\n    --build-id YourBuildID \\\n    --aws-lambda-invoke LambdaFunctionARN \\\n    --scaler-algorithm \"no-sync\"\n```\n\nNote: This is an experimental feature and may change in the future."
+	}
+	s.Command.Args = cobra.NoArgs
+	s.Command.Flags().StringVar(&s.AwsLambdaInvoke, "aws-lambda-invoke", "", "Qualified (contains version suffix) or Unqualified AWS Lambda Function ARN to invoke when there are no active pollers for task queue targets in the Worker Deployment.")
+	s.Command.Flags().StringVar(&s.AwsLambdaAssumeRole, "aws-lambda-assume-role", "", "AWS IAM Role ARN that the Temporal server will assume when invoking the Lambda Function that spawns a new Worker in this Worker Deployment Version.")
+	s.Command.Flags().StringVar(&s.AwsLambdaAssumeRoleExternalId, "aws-lambda-assume-role-external-id", "", "When not empty, Temporal server will enforce that the AWS IAM Trust Policy associated with the AWS IAM Role specified in --aws-lambda-assume-role has an aws:ExternalId condition that matches the supplied value.")
+	s.Command.Flags().StringVar(&s.ScalerAlgorithm, "scaler-algorithm", "no-sync", "The scaling algorithm the Temporal server will use to scale out and in the set of Workers in this Worker Deployment Version when using server-managed Workers.  Accepted values are 'no-sync' (default).  The 'no-sync' scaling algorithm scales up the number of server-owned Workers in this Worker Deployment Version when the server finds no active pollers against the task queue associated with the Worker Deployment Version.")
+	s.DeploymentVersionOptions.BuildFlags(s.Command.Flags())
+	s.Command.Run = func(c *cobra.Command, args []string) {
+		if err := s.run(cctx, args); err != nil {
+			cctx.Options.Fail(err)
+		}
+	}
 	return &s
 }
 

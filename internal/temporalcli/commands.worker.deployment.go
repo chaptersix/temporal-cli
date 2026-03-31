@@ -8,12 +8,16 @@ import (
 	"github.com/fatih/color"
 	"github.com/temporalio/cli/internal/printer"
 	"go.temporal.io/api/common/v1"
+	computepb "go.temporal.io/api/compute/v1"
+	"go.temporal.io/api/deployment/v1"
 	deploymentpb "go.temporal.io/api/deployment/v1"
+	"go.temporal.io/api/enums/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
 	taskqueuepb "go.temporal.io/api/taskqueue/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/worker"
 )
 
@@ -770,6 +774,360 @@ func (c *TemporalWorkerDeploymentManagerIdentityUnsetCommand) run(cctx *CommandC
 	}
 
 	cctx.Printer.Printlnf("Successfully unset manager identity, was previously '%s'", resp.PreviousManagerIdentity)
+	return nil
+}
+
+// computeConfig wraps configuration settings for a compute provider and
+// scaling for a set of TaskQueue name+type tuples.
+type computeConfig struct {
+	// ScalingGroups contains the set of ComputeConfigScalingGroup objects
+	// associated with the ComputeConfig. The key for the map is the ID of the
+	// scaling group.
+	ScalingGroups map[string]*computeConfigScalingGroup
+}
+
+// computeConfigScalingGroup defines a set of configuration settings for a
+// compute provider and scaling for a set of TaskQueue types.
+type computeConfigScalingGroup struct {
+	// TaskQueueTypes is the set of task queue types this scaling group serves.
+	TaskQueueTypes []string
+	// Provider contains the optional compute provider configuration settings.
+	Provider *computeProvider
+	// Scaler contains the optional compute scaler configuration settings.
+	Scaler *computeScaler
+}
+
+// computeProvider describes configuration settings for a compute provider.
+type computeProvider struct {
+	// Type of the compute provider. This string is implementation-specific and
+	// can be used by implementations to understand how to interpret the
+	// contents of the details field.
+	Type string
+	// Details contains an implementation-specific thing that describes the
+	// compute provider configuration settings.
+	Details map[string]any
+	// NexusEndpoint points at the Nexus service, if the compute provider is a
+	// Nexus service.
+	NexusEndpoint string
+}
+
+// computeScaler describes configuration settings for a scaler of compute.
+type computeScaler struct {
+	// Type of the compute scaler. This string is implementation-specific and
+	// can be used by implementations to understand how to interpret the
+	// contents of the details field.
+	Type string
+	// Details contains an implementation-specific thing that describes the
+	// compute scaler configuration settings.
+	Details map[string]any
+}
+
+func computeConfigFromProto(
+	dc converter.DataConverter,
+	msg *computepb.ComputeConfig,
+) (*computeConfig, error) {
+	if msg == nil {
+		return nil, nil
+	}
+
+	res := &computeConfig{}
+	groups := make(map[string]*computeConfigScalingGroup, len(msg.ScalingGroups))
+	for groupName, group := range msg.ScalingGroups {
+		g, err := computeConfigScalingGroupFromProto(dc, group)
+		if err != nil {
+			return nil, err
+		}
+		groups[groupName] = g
+	}
+	res.ScalingGroups = groups
+	return res, nil
+}
+
+func validateComputeConfig(cfg *computeConfig) error {
+	if cfg == nil {
+		return nil
+	}
+	for groupName, group := range cfg.ScalingGroups {
+		err := validateComputeConfigScalingGroup(groupName, group)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func computeConfigToProto(
+	dc converter.DataConverter,
+	cc *computeConfig,
+) (*computepb.ComputeConfig, error) {
+	if cc == nil {
+		return nil, nil
+	}
+
+	groups := make(
+		map[string]*computepb.ComputeConfigScalingGroup,
+		len(cc.ScalingGroups),
+	)
+	for groupName, group := range cc.ScalingGroups {
+		g, err := computeConfigScalingGroupToProto(dc, group)
+		if err != nil {
+			return nil, err
+		}
+		groups[groupName] = g
+	}
+	return &computepb.ComputeConfig{
+		ScalingGroups: groups,
+	}, nil
+}
+
+func computeConfigScalingGroupFromProto(
+	dc converter.DataConverter,
+	msg *computepb.ComputeConfigScalingGroup,
+) (*computeConfigScalingGroup, error) {
+	if msg == nil {
+		return nil, nil
+	}
+
+	res := &computeConfigScalingGroup{}
+	msgTQTs := msg.GetTaskQueueTypes()
+	tqts := make([]string, len(msgTQTs))
+	for x, msgTQT := range msgTQTs {
+		tqts[x] = taskQueueTypeStrFromProto(msgTQT)
+	}
+	res.TaskQueueTypes = tqts
+	p, err := computeProviderFromProto(dc, msg.GetProvider())
+	if err != nil {
+		return nil, err
+	}
+	res.Provider = p
+	s, err := computeScalerFromProto(dc, msg.GetScaler())
+	if err != nil {
+		return nil, err
+	}
+	res.Scaler = s
+	return res, nil
+}
+
+func validateComputeConfigScalingGroup(
+	groupName string,
+	cfg *computeConfigScalingGroup,
+) error {
+	if cfg == nil {
+		return nil
+	}
+	p := cfg.Provider
+	if p != nil {
+		if p.Type == "" {
+			return fmt.Errorf(
+				"compute config scaling group %s missing provider type",
+				groupName,
+			)
+		}
+		if p.Details == nil {
+			return fmt.Errorf(
+				"compute config scaling group %s missing provider details",
+				groupName,
+			)
+		}
+	}
+	s := cfg.Scaler
+	if s != nil {
+		if s.Type == "" {
+			return fmt.Errorf(
+				"compute config scaling group %s missing scaler type",
+				groupName,
+			)
+		}
+		if s.Details == nil {
+			return fmt.Errorf(
+				"compute config scaling group %s missing scaler details",
+				groupName,
+			)
+		}
+	}
+	return nil
+}
+
+func computeConfigScalingGroupToProto(
+	dc converter.DataConverter,
+	group *computeConfigScalingGroup,
+) (*computepb.ComputeConfigScalingGroup, error) {
+	if group == nil {
+		return nil, nil
+	}
+
+	tqts := group.TaskQueueTypes
+	msgTQTs := make([]enums.TaskQueueType, len(tqts))
+	for x, tqt := range tqts {
+		msgTQTs[x] = taskQueueTypeStrToProto(tqt)
+	}
+	provider, err := computeProviderToProto(dc, group.Provider)
+	if err != nil {
+		return nil, err
+	}
+	scaler, err := computeScalerToProto(dc, group.Scaler)
+	if err != nil {
+		return nil, err
+	}
+	return &computepb.ComputeConfigScalingGroup{
+		TaskQueueTypes: msgTQTs,
+		Provider:       provider,
+		Scaler:         scaler,
+	}, nil
+}
+
+func computeProviderToProto(
+	dc converter.DataConverter,
+	p *computeProvider,
+) (*computepb.ComputeProvider, error) {
+	if p == nil {
+		return nil, nil
+	}
+	res := &computepb.ComputeProvider{
+		Type: p.Type,
+	}
+	details := p.Details
+	enc, err := dc.ToPayload(&details)
+	if err != nil {
+		return nil, err
+	}
+	res.Details = enc
+	return res, nil
+}
+
+func computeScalerToProto(
+	dc converter.DataConverter,
+	s *computeScaler,
+) (*computepb.ComputeScaler, error) {
+	if s == nil {
+		return nil, nil
+	}
+	res := &computepb.ComputeScaler{
+		Type: s.Type,
+	}
+	details := s.Details
+	enc, err := dc.ToPayload(&details)
+	if err != nil {
+		return nil, err
+	}
+	res.Details = enc
+	return res, nil
+}
+
+func computeProviderFromProto(
+	dc converter.DataConverter,
+	msg *computepb.ComputeProvider,
+) (*computeProvider, error) {
+	if msg == nil {
+		return nil, nil
+	}
+
+	res := &computeProvider{
+		Type:          msg.GetType(),
+		NexusEndpoint: msg.GetNexusEndpoint(),
+	}
+	details := make(map[string]any)
+	if details != nil {
+		err := dc.FromPayload(msg.GetDetails(), details)
+		if err != nil {
+			return nil, err
+		}
+		res.Details = details
+	}
+	return res, nil
+}
+
+func computeScalerFromProto(
+	dc converter.DataConverter,
+	msg *computepb.ComputeScaler,
+) (*computeScaler, error) {
+	if msg == nil {
+		return nil, nil
+	}
+
+	res := &computeScaler{
+		Type: msg.GetType(),
+	}
+	details := make(map[string]any)
+	if details != nil {
+		err := dc.FromPayload(msg.GetDetails(), details)
+		if err != nil {
+			return nil, err
+		}
+		res.Details = details
+	}
+	return res, nil
+}
+
+func (c *TemporalWorkerDeploymentCreateVersionCommand) run(cctx *CommandContext, args []string) error {
+	cl, err := dialClient(cctx, &c.Parent.Parent.ClientOptions)
+	if err != nil {
+		return err
+	}
+	defer cl.Close()
+
+	ns := c.Parent.Parent.Namespace
+	buildID := c.BuildId
+	identity := c.Parent.Parent.Identity
+	deploymentName := c.DeploymentName
+	dc := converter.GetDefaultDataConverter()
+
+	var cc *computeConfig
+	if c.AwsLambdaInvoke != "" {
+		// NOTE(jaypipes): These map keys come from here:
+		// https://github.com/temporalio/temporal-auto-scaled-workers/blob/c4a7e69b6504365d7e5326b0b8e6cd95e3293f96/wci/workflow/compute_provider/aws_lambda.go#L16-L20
+		providerDetails := map[string]any{
+			"arn": c.AwsLambdaInvoke,
+		}
+		if c.AwsLambdaAssumeRole != "" {
+			providerDetails["role"] = c.AwsLambdaAssumeRole
+		}
+		if c.AwsLambdaAssumeRoleExternalId != "" {
+			providerDetails["role_external_id"] = c.AwsLambdaAssumeRoleExternalId
+		}
+		cc = &computeConfig{}
+		cc.ScalingGroups = map[string]*computeConfigScalingGroup{
+			"default": {
+				Provider: &computeProvider{
+					Type:    "aws-lambda",
+					Details: providerDetails,
+				},
+				Scaler: &computeScaler{
+					// NOTE(jaypipes): Hard-coding the no-sync scaling
+					// algorithm since as of April 1, 2026, this is the only
+					// supported one in temporal-auto-scaled-workers.
+					Type: "no-sync",
+				},
+			},
+		}
+	}
+
+	var ccProto *computepb.ComputeConfig
+	if cc != nil {
+		if err = validateComputeConfig(cc); err != nil {
+			return err
+		}
+		ccProto, err = computeConfigToProto(dc, cc)
+		if err != nil {
+			return err
+		}
+	}
+	request := &workflowservice.CreateWorkerDeploymentVersionRequest{
+		Namespace: ns,
+		DeploymentVersion: &deployment.WorkerDeploymentVersion{
+			DeploymentName: deploymentName,
+			BuildId:        buildID,
+		},
+		Identity:      identity,
+		ComputeConfig: ccProto,
+	}
+
+	_, err = cl.WorkflowService().CreateWorkerDeploymentVersion(cctx, request)
+	if err != nil {
+		return fmt.Errorf("error creating worker deployment version: %w", err)
+	}
+
+	cctx.Printer.Println("Successfully created worker deployment version")
 	return nil
 }
 
