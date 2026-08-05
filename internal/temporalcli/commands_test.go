@@ -229,39 +229,68 @@ type SharedServerSuite struct {
 	lazyWorkerLock sync.Mutex
 }
 
+// sharedServerDynamicConfigOverride is one dynamic config value SharedServerSuite forces on.
+type sharedServerDynamicConfigOverride struct {
+	Key   string
+	Value any
+	// TestOnly is true for values that only make sense in a test environment (relaxed rate
+	// limits, disabled caching, shortened timeouts) and would never become a server default.
+	//
+	// It is false for feature flags that are off by default in the pinned server version today.
+	// Those are prod feature previews we're forcing on for test coverage, and each one should
+	// have a companion test (see TestActivity_Start_StandaloneEnabledByServerDefault) that
+	// starts a bare dev server with no overrides and confirms the gated behavior is still
+	// disabled by default. When a server upgrade flips one of those defaults to enabled, that
+	// companion test fails, which is the signal to delete the override below (see
+	// https://github.com/temporalio/cli/issues/1083).
+	TestOnly bool
+}
+
+var sharedServerDynamicConfigOverrides = []sharedServerDynamicConfigOverride{
+	{
+		// Allow a high rate of change to namespaces, particularly for the task-queue command
+		// tests.
+		Key: "frontend.namespaceRPS.visibility", Value: 10000, TestOnly: true,
+	},
+	{
+		// Required by TestWorkflow_Show_SystemNexusOperationTransformsTypeNames to schedule a
+		// SignalWithStartWorkflowExecution Nexus operation against the __temporal_system
+		// endpoint from inside a workflow.
+		Key: "history.enableSignalWithStartFromWorkflow", Value: true, TestOnly: false,
+	},
+	{
+		Key: "activity.startDelayEnabled", Value: true, TestOnly: false,
+	},
+	{
+		Key: "history.enableStandaloneActivityOperatorCommands", Value: true, TestOnly: false,
+	},
+	{
+		Key: "activity.longPollTimeout", Value: 2 * time.Second, TestOnly: true,
+	},
+	{
+		Key: "nexusoperation.enableStandalone", Value: true, TestOnly: false,
+	},
+	{
+		// Disable DescribeTaskQueue cache while testing versioning behavior.
+		Key: "matching.TaskQueueInfoByBuildIdTTL", Value: 0 * time.Second, TestOnly: true,
+	},
+	{
+		// Required by TestActivity_CancelTerminateDelete_* to enable batch operations on
+		// standalone activities.
+		Key: "frontend.enableBatchOperationsForStandaloneActivities", Value: true, TestOnly: false,
+	},
+}
+
 func (s *SharedServerSuite) SetupSuite() {
+	dynamicConfigValues := make(map[string]any, len(sharedServerDynamicConfigOverrides))
+	for _, o := range sharedServerDynamicConfigOverrides {
+		dynamicConfigValues[o.Key] = o.Value
+	}
 	s.DevServer = StartDevServer(s.Suite.T(), DevServerOptions{
 		StartOptions: devserver.StartOptions{
 			// Enable for operator cluster commands
 			EnableGlobalNamespace: true,
-			DynamicConfigValues: map[string]any{
-				"frontend.enableUpdateWorkflowExecutionAsyncAccepted": true,
-				// Allow a high rate of change to namespaces, particularly
-				// for the task-queue command tests.
-				"frontend.namespaceRPS.visibility": 10000,
-				// Disable DescribeTaskQueue cache.
-				"frontend.activityAPIsEnabled": true,
-				"history.enableChasm":          true,
-				// Required by TestWorkflow_Show_SystemNexusOperationTransformsTypeNames
-				// to schedule a SignalWithStartWorkflowExecution Nexus operation against
-				// the __temporal_system endpoint from inside a workflow.
-				"history.enableSignalWithStartFromWorkflow":        true,
-				"activity.enableStandalone":                        true,
-				"activity.startDelayEnabled":                       true,
-				"history.enableStandaloneActivityOperatorCommands": true,
-				"activity.longPollTimeout":                         2 * time.Second,
-				"nexusoperation.enableStandalone":                  true,
-				"history.enableChasmCallbacks":                     true,
-				// this is overridden since we don't want caching to be enabled
-				// while testing DescribeTaskQueue behaviour related to versioning
-				"matching.TaskQueueInfoByBuildIdTTL": 0 * time.Second,
-				// worker heartbeating
-				"frontend.WorkerHeartbeatsEnabled": true,
-				"frontend.ListWorkersEnabled":      true,
-				// Required by TestActivity_CancelTerminateDelete_*
-				// to enable batch operations on standalone activities.
-				"frontend.enableBatchOperationsForStandaloneActivities": true,
-			},
+			DynamicConfigValues:   dynamicConfigValues,
 		},
 	})
 	// Stop server if we fail later
