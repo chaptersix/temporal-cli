@@ -60,8 +60,28 @@ const (
 )
 
 type namespaceFeatureOverride struct {
-	setting dynamicconfig.NamespaceBoolSetting
-	enabled bool
+	setting     dynamicconfig.NamespaceBoolSetting
+	enabled     bool
+	feature     string
+	designation featureDesignation
+}
+
+type featureDesignation string
+
+const (
+	featureDesignationExperimental  featureDesignation = "Experimental"
+	featureDesignationPreRelease    featureDesignation = "Pre-release"
+	featureDesignationPublicPreview featureDesignation = "Public preview"
+)
+
+// StartDevFeatureOverride describes feature-specific dynamic config shown in the
+// `temporal server start-dev` banner.
+type StartDevFeatureOverride struct {
+	Feature        string
+	Designation    string
+	Key            string
+	Value          any
+	UserConfigured bool
 }
 
 // startDevServerFeatureOverrides contains temporary feature-specific dynamic config for
@@ -72,8 +92,40 @@ type namespaceFeatureOverride struct {
 // These values are applied without constraints and therefore affect every namespace.
 // NamespaceBoolSetting describes the server setting's lookup precedence, not override scope.
 var startDevServerFeatureOverrides = []namespaceFeatureOverride{
-	{setting: activity.EnableStandaloneActivityOperatorCommands, enabled: true},
-	{setting: dynamicconfig.FrontendEnableBatchOperationsForStandaloneActivities, enabled: true},
+	{
+		setting:     activity.EnableStandaloneActivityOperatorCommands,
+		enabled:     true,
+		feature:     "Standalone Activity operator commands",
+		designation: featureDesignationPublicPreview,
+	},
+	{
+		setting:     dynamicconfig.FrontendEnableBatchOperationsForStandaloneActivities,
+		enabled:     true,
+		feature:     "Standalone Activity batch operations",
+		designation: featureDesignationPublicPreview,
+	},
+}
+
+// StartDevFeatureOverrides returns the effective feature-specific configuration for display.
+func (s *StartOptions) StartDevFeatureOverrides() []StartDevFeatureOverride {
+	overrides := make([]StartDevFeatureOverride, 0, len(startDevServerFeatureOverrides))
+	for _, override := range startDevServerFeatureOverrides {
+		key := override.setting.Key().String()
+		value := any(override.enabled)
+		userConfigured := false
+		if configuredValue, ok := s.DynamicConfigValues[key]; ok {
+			value = configuredValue
+			userConfigured = true
+		}
+		overrides = append(overrides, StartDevFeatureOverride{
+			Feature:        override.feature,
+			Designation:    string(override.designation),
+			Key:            key,
+			Value:          value,
+			UserConfigured: userConfigured,
+		})
+	}
+	return overrides
 }
 
 type StartOptions struct {

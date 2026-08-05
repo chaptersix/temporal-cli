@@ -175,6 +175,15 @@ func (t *TemporalServerStartDevCommand) run(cctx *CommandContext, args []string)
 		cctx.Printer.Printlnf("%-21s http://%v:%v%v", "Temporal UI:", toFriendlyIp(opts.UIIP), opts.UIPort, opts.PublicPath)
 	}
 	cctx.Printer.Printlnf("%-21s http://%v:%v/metrics", "Temporal Metrics:", toFriendlyIp(opts.FrontendIP), opts.MetricsPort)
+	cctx.Printer.Printlnf("Temporal Features:")
+	for _, override := range opts.StartDevFeatureOverrides() {
+		source := "built-in"
+		if override.UserConfigured {
+			source = "user override"
+		}
+		cctx.Printer.Printlnf("  %-14s %-37s %s=%v (%s)",
+			override.Designation, override.Feature, override.Key, override.Value, source)
+	}
 	<-cctx.Done()
 	if !t.Parent.Parent.LogLevel.ChangedFromDefault {
 		// The server routinely emits various warnings on shutdown.

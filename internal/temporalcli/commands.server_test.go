@@ -19,6 +19,8 @@ import (
 	"go.temporal.io/api/operatorservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/temporal"
+	serveractivity "go.temporal.io/server/chasm/lib/activity"
+	"go.temporal.io/server/common/dynamicconfig"
 )
 
 // TODO(cretz): To test:
@@ -328,7 +330,10 @@ func TestServer_StartDev_BannerPersistenceInMemory(t *testing.T) {
 	httpPort := strconv.Itoa(devserver.MustGetFreePort("127.0.0.1"))
 	resCh := make(chan *CommandResult, 1)
 	go func() {
-		resCh <- h.Execute("server", "start-dev", "-p", port, "--http-port", httpPort, "--headless")
+		resCh <- h.Execute(
+			"server", "start-dev", "-p", port, "--http-port", httpPort, "--headless",
+			"--dynamic-config-value", serveractivity.EnableStandaloneActivityOperatorCommands.Key().String()+"=false",
+		)
 	}()
 
 	// Wait until the server is dial-able, then cancel
@@ -357,6 +362,10 @@ func TestServer_StartDev_BannerPersistenceInMemory(t *testing.T) {
 	out := res.Stdout.String()
 	h.Contains(out, "Temporal Persistence:")
 	h.Contains(out, "in-memory")
+	h.Contains(out, "Temporal Features:")
+	h.Contains(out, "Public preview")
+	h.Contains(out, serveractivity.EnableStandaloneActivityOperatorCommands.Key().String()+"=false (user override)")
+	h.Contains(out, dynamicconfig.FrontendEnableBatchOperationsForStandaloneActivities.Key().String()+"=true (built-in)")
 }
 
 func TestServer_StartDev_BannerPersistenceFile(t *testing.T) {
