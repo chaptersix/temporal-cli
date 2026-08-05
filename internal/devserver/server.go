@@ -59,6 +59,23 @@ const (
 	localhost = "127.0.0.1"
 )
 
+type namespaceFeatureOverride struct {
+	setting dynamicconfig.NamespaceBoolSetting
+	enabled bool
+}
+
+// startDevServerFeatureOverrides contains temporary feature-specific dynamic config for
+// `temporal server start-dev`. Add boolean feature overrides here instead of assigning them
+// inline in buildServerOptions so TestStartDevServerFeatureOverridesMatchServerDefaults can
+// detect when an override becomes redundant.
+//
+// These values are applied without constraints and therefore affect every namespace.
+// NamespaceBoolSetting describes the server setting's lookup precedence, not override scope.
+var startDevServerFeatureOverrides = []namespaceFeatureOverride{
+	{setting: activity.EnableStandaloneActivityOperatorCommands, enabled: true},
+	{setting: dynamicconfig.FrontendEnableBatchOperationsForStandaloneActivities, enabled: true},
+}
+
 type StartOptions struct {
 	// Required fields
 	FrontendIP             string
@@ -243,12 +260,12 @@ func (s *StartOptions) buildServerOptions() ([]temporal.ServerOption, *slog.Leve
 	// Up default visibility RPS
 	dynConf[dynamicconfig.FrontendMaxNamespaceVisibilityRPSPerInstance.Key()] = 100
 
-	// Enable CHASM and SAA. These will be on by default in server v1.32, at which point these lines
-	// should be removed.
-	dynConf[dynamicconfig.EnableChasm.Key()] = true
-	dynConf[activity.Enabled.Key()] = true
-	dynConf[activity.EnableStandaloneActivityOperatorCommands.Key()] = true
-	dynConf[dynamicconfig.FrontendEnableBatchOperationsForStandaloneActivities.Key()] = true
+	// CHASM (dynamicconfig.EnableChasm) and SAA (activity.Enabled) are on by default as of
+	// server v1.32, so they no longer need to be forced on here.
+	// Feature-specific dynamic config must come from the validated list above, not be set inline.
+	for _, override := range startDevServerFeatureOverrides {
+		dynConf[override.setting.Key()] = override.enabled
+	}
 
 	// Dynamic config if set
 	for k, v := range s.DynamicConfigValues {

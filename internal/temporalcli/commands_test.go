@@ -26,6 +26,9 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
+	serveractivity "go.temporal.io/server/chasm/lib/activity"
+	servernexusoperation "go.temporal.io/server/chasm/lib/nexusoperation"
+	"go.temporal.io/server/common/dynamicconfig"
 	"google.golang.org/grpc"
 )
 
@@ -229,39 +232,85 @@ type SharedServerSuite struct {
 	lazyWorkerLock sync.Mutex
 }
 
+type featureOverride struct {
+	key            string
+	enabled        bool
+	defaultEnabled func(*dynamicconfig.Collection) bool
+}
+
+func overrideGlobalSetting(setting dynamicconfig.GlobalBoolSetting, enabled bool) featureOverride {
+	return featureOverride{
+		key:     setting.Key().String(),
+		enabled: enabled,
+		defaultEnabled: func(dc *dynamicconfig.Collection) bool {
+			return setting.Get(dc)()
+		},
+	}
+}
+
+// Namespace describes the setting's lookup precedence. The static CLI value is still
+// unconstrained and applies to every namespace.
+func overrideNamespaceSetting(setting dynamicconfig.NamespaceBoolSetting, enabled bool) featureOverride {
+	return featureOverride{
+		key:     setting.Key().String(),
+		enabled: enabled,
+		defaultEnabled: func(dc *dynamicconfig.Collection) bool {
+			return setting.Get(dc)("default")
+		},
+	}
+}
+
+// allTestDevServerFeatureOverrides are applied by StartDevServer to every test server,
+// including SharedServerSuite and its auxiliary standby clusters. Add broadly required
+// boolean feature overrides here instead of assigning them inline in StartDevServer.
+var allTestDevServerFeatureOverrides = []featureOverride{
+	overrideNamespaceSetting(dynamicconfig.FrontendEnableWorkerVersioningRuleAPIs, true),
+	overrideNamespaceSetting(dynamicconfig.FrontendEnableWorkerVersioningDataAPIs, true),
+	overrideNamespaceSetting(dynamicconfig.EnableDeployments, true),
+	overrideGlobalSetting(dynamicconfig.BuildIdScavengerEnabled, true),
+}
+
+// sharedSuiteFeatureOverrides are applied only to the singleton server used by
+// SharedServerSuite. Add boolean feature overrides needed only by that suite here instead
+// of assigning them inline in SetupSuite.
+var sharedSuiteFeatureOverrides = []featureOverride{
+	// Required by TestWorkflow_Show_SystemNexusOperationTransformsTypeNames.
+	overrideNamespaceSetting(dynamicconfig.EnableSignalWithStartFromWorkflow, true),
+	overrideNamespaceSetting(serveractivity.StartDelayEnabled, true),
+	overrideNamespaceSetting(servernexusoperation.Enabled, true),
+}
+
+func applyFeatureOverrides(values map[string]any, overrides []featureOverride) {
+	for _, override := range overrides {
+		values[override.key] = override.enabled
+	}
+}
+
+// TestDynamicConfigOverridesMatchServerDefaults guards against feature overrides becoming
+// redundant when the pinned server version changes. Test-only tuning overrides are excluded.
+func TestDynamicConfigOverridesMatchServerDefaults(t *testing.T) {
+	dc := dynamicconfig.NewNoopCollection()
+	for _, override := range slices.Concat(allTestDevServerFeatureOverrides, sharedSuiteFeatureOverrides) {
+		t.Run(override.key, func(t *testing.T) {
+			require.NotEqualf(t, override.enabled, override.defaultEnabled(dc),
+				"%q now defaults to %t; remove its feature override", override.key, override.enabled)
+		})
+	}
+}
+
 func (s *SharedServerSuite) SetupSuite() {
+	dynamicConfigValues := map[string]any{
+		"activity.longPollTimeout": 2 * time.Second,
+		// Disable DescribeTaskQueue caching while testing versioning behavior.
+		"matching.TaskQueueInfoByBuildIdTTL": 0 * time.Second,
+	}
+	applyFeatureOverrides(dynamicConfigValues, sharedSuiteFeatureOverrides)
+
 	s.DevServer = StartDevServer(s.Suite.T(), DevServerOptions{
 		StartOptions: devserver.StartOptions{
 			// Enable for operator cluster commands
 			EnableGlobalNamespace: true,
-			DynamicConfigValues: map[string]any{
-				"frontend.enableUpdateWorkflowExecutionAsyncAccepted": true,
-				// Allow a high rate of change to namespaces, particularly
-				// for the task-queue command tests.
-				"frontend.namespaceRPS.visibility": 10000,
-				// Disable DescribeTaskQueue cache.
-				"frontend.activityAPIsEnabled": true,
-				"history.enableChasm":          true,
-				// Required by TestWorkflow_Show_SystemNexusOperationTransformsTypeNames
-				// to schedule a SignalWithStartWorkflowExecution Nexus operation against
-				// the __temporal_system endpoint from inside a workflow.
-				"history.enableSignalWithStartFromWorkflow":        true,
-				"activity.enableStandalone":                        true,
-				"activity.startDelayEnabled":                       true,
-				"history.enableStandaloneActivityOperatorCommands": true,
-				"activity.longPollTimeout":                         2 * time.Second,
-				"nexusoperation.enableStandalone":                  true,
-				"history.enableChasmCallbacks":                     true,
-				// this is overridden since we don't want caching to be enabled
-				// while testing DescribeTaskQueue behaviour related to versioning
-				"matching.TaskQueueInfoByBuildIdTTL": 0 * time.Second,
-				// worker heartbeating
-				"frontend.WorkerHeartbeatsEnabled": true,
-				"frontend.ListWorkersEnabled":      true,
-				// Required by TestActivity_CancelTerminateDelete_*
-				// to enable batch operations on standalone activities.
-				"frontend.enableBatchOperationsForStandaloneActivities": true,
-			},
+			DynamicConfigValues:   dynamicConfigValues,
 		},
 	})
 	// Stop server if we fail later
@@ -405,14 +454,9 @@ func StartDevServer(t *testing.T, options DevServerOptions) *DevServer {
 	if d.Options.DynamicConfigValues == nil {
 		d.Options.DynamicConfigValues = map[string]any{}
 	}
+	// Feature-specific dynamic config must come from the validated list above, not be set inline.
+	applyFeatureOverrides(d.Options.DynamicConfigValues, allTestDevServerFeatureOverrides)
 	d.Options.DynamicConfigValues["system.forceSearchAttributesCacheRefreshOnRead"] = true
-	d.Options.DynamicConfigValues["frontend.workerVersioningRuleAPIs"] = true
-	d.Options.DynamicConfigValues["frontend.workerVersioningDataAPIs"] = true
-	d.Options.DynamicConfigValues["frontend.workerVersioningWorkflowAPIs"] = true
-	d.Options.DynamicConfigValues["system.enableDeployments"] = true
-	d.Options.DynamicConfigValues["system.enableDeploymentVersions"] = true
-	d.Options.DynamicConfigValues["worker.buildIdScavengerEnabled"] = true
-	d.Options.DynamicConfigValues["frontend.enableUpdateWorkflowExecution"] = true
 	d.Options.DynamicConfigValues["frontend.MaxConcurrentBatchOperationPerNamespace"] = 1000
 	d.Options.DynamicConfigValues["frontend.namespaceRPS.visibility"] = 100
 	d.Options.DynamicConfigValues["system.clusterMetadataRefreshInterval"] = 100 * time.Millisecond
