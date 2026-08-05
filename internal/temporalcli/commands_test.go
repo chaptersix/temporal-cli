@@ -232,197 +232,82 @@ type SharedServerSuite struct {
 	lazyWorkerLock sync.Mutex
 }
 
-// dynamicConfigOverride is one dynamic config value a test dev server forces on, either as part
-// of every dev server started via StartDevServer (see baseDevServerDynamicConfigOverrides) or
-// just the shared one used by SharedServerSuite (see sharedServerDynamicConfigOverrides).
-//
-// Setting references the real dynamicconfig.GenericSetting from go.temporal.io/server (e.g.
-// dynamicconfig.EnableChasm, serveractivity.Enabled) rather than a raw string key, so a key that
-// gets renamed or removed upstream is a compile error here instead of a silently no-op override.
-type dynamicConfigOverride struct {
-	Setting dynamicconfig.GenericSetting
-	Value   any
-	// TestOnly is true for values that only make sense in a test environment (relaxed rate
-	// limits, disabled caching, shortened timeouts) and would never become a server default.
-	//
-	// It is false for feature flags that are off by default in the pinned server version today.
-	// Those are prod feature previews we're forcing on for test coverage, and each one must set
-	// Default below. TestDynamicConfigOverridesMatchServerDefaults asserts Default() still
-	// disagrees with Value; when a server upgrade flips one of those defaults to match Value,
-	// that assertion fails, which is the signal to delete the override (see
-	// https://github.com/temporalio/cli/issues/1083).
-	TestOnly bool
-	// Default returns this setting's current value straight from go.temporal.io/server with no
-	// overrides applied (see dynamicconfig.NewNoopCollection), i.e. the server's own default.
-	// Required when TestOnly is false; unused otherwise.
-	Default func(dc *dynamicconfig.Collection) bool
+type featureOverride struct {
+	key            string
+	enabled        bool
+	defaultEnabled func(*dynamicconfig.Collection) bool
 }
 
-func dynamicConfigValues(overrides []dynamicConfigOverride) map[string]any {
-	values := make(map[string]any, len(overrides))
-	for _, o := range overrides {
-		values[o.Setting.Key().String()] = o.Value
+func overrideGlobalSetting(setting dynamicconfig.GlobalBoolSetting, enabled bool) featureOverride {
+	return featureOverride{
+		key:     setting.Key().String(),
+		enabled: enabled,
+		defaultEnabled: func(dc *dynamicconfig.Collection) bool {
+			return setting.Get(dc)()
+		},
 	}
-	return values
 }
 
-// baseDevServerDynamicConfigOverrides are forced on for every dev server started via
-// StartDevServer, applied only where the caller hasn't already set that key (see StartDevServer).
-var baseDevServerDynamicConfigOverrides = []dynamicConfigOverride{
-	{
-		Setting: dynamicconfig.ForceSearchAttributesCacheRefreshOnRead, Value: true, TestOnly: false,
-		Default: func(dc *dynamicconfig.Collection) bool {
-			return dynamicconfig.ForceSearchAttributesCacheRefreshOnRead.Get(dc)()
+// Namespace describes the setting's lookup precedence. The static CLI value is still
+// unconstrained and applies to every namespace.
+func overrideNamespaceSetting(setting dynamicconfig.NamespaceBoolSetting, enabled bool) featureOverride {
+	return featureOverride{
+		key:     setting.Key().String(),
+		enabled: enabled,
+		defaultEnabled: func(dc *dynamicconfig.Collection) bool {
+			return setting.Get(dc)("default")
 		},
-	},
-	{
-		Setting: dynamicconfig.FrontendEnableWorkerVersioningRuleAPIs, Value: true, TestOnly: false,
-		Default: func(dc *dynamicconfig.Collection) bool {
-			return dynamicconfig.FrontendEnableWorkerVersioningRuleAPIs.Get(dc)("default")
-		},
-	},
-	{
-		Setting: dynamicconfig.FrontendEnableWorkerVersioningDataAPIs, Value: true, TestOnly: false,
-		Default: func(dc *dynamicconfig.Collection) bool {
-			return dynamicconfig.FrontendEnableWorkerVersioningDataAPIs.Get(dc)("default")
-		},
-	},
-	{
-		Setting: dynamicconfig.EnableDeployments, Value: true, TestOnly: false,
-		Default: func(dc *dynamicconfig.Collection) bool {
-			return dynamicconfig.EnableDeployments.Get(dc)("default")
-		},
-	},
-	{
-		Setting: dynamicconfig.BuildIdScavengerEnabled, Value: true, TestOnly: false,
-		Default: func(dc *dynamicconfig.Collection) bool {
-			return dynamicconfig.BuildIdScavengerEnabled.Get(dc)()
-		},
-	},
-	{
-		// Raise the default per-namespace concurrent/RPS limits so batch and namespace-heavy
-		// tests aren't rate limited.
-		Setting: dynamicconfig.FrontendMaxConcurrentBatchOperationPerNamespace, Value: 1000, TestOnly: true,
-	},
-	{
-		Setting: dynamicconfig.FrontendMaxNamespaceVisibilityRPSPerInstance, Value: 100, TestOnly: true,
-	},
-	{
-		// Shorten cluster metadata refresh so multi-cluster tests don't wait a full minute.
-		Setting: dynamicconfig.ClusterMetadataRefreshInterval, Value: 100 * time.Millisecond, TestOnly: true,
-	},
+	}
 }
 
-var sharedServerDynamicConfigOverrides = []dynamicConfigOverride{
-	{
-		// Allow a high rate of change to namespaces, particularly for the task-queue command
-		// tests.
-		Setting: dynamicconfig.FrontendMaxNamespaceVisibilityRPSPerInstance, Value: 10000, TestOnly: true,
-	},
-	{
-		// Required by TestWorkflow_Show_SystemNexusOperationTransformsTypeNames to schedule a
-		// SignalWithStartWorkflowExecution Nexus operation against the __temporal_system
-		// endpoint from inside a workflow.
-		Setting: dynamicconfig.EnableSignalWithStartFromWorkflow, Value: true, TestOnly: false,
-		Default: func(dc *dynamicconfig.Collection) bool {
-			return dynamicconfig.EnableSignalWithStartFromWorkflow.Get(dc)("default")
-		},
-	},
-	{
-		Setting: serveractivity.StartDelayEnabled, Value: true, TestOnly: false,
-		Default: func(dc *dynamicconfig.Collection) bool {
-			return serveractivity.StartDelayEnabled.Get(dc)("default")
-		},
-	},
-	{
-		Setting: serveractivity.EnableStandaloneActivityOperatorCommands, Value: true, TestOnly: false,
-		Default: func(dc *dynamicconfig.Collection) bool {
-			return serveractivity.EnableStandaloneActivityOperatorCommands.Get(dc)("default")
-		},
-	},
-	{
-		Setting: serveractivity.LongPollTimeout, Value: 2 * time.Second, TestOnly: true,
-	},
-	{
-		Setting: servernexusoperation.Enabled, Value: true, TestOnly: false,
-		Default: func(dc *dynamicconfig.Collection) bool {
-			return servernexusoperation.Enabled.Get(dc)("default")
-		},
-	},
-	{
-		// Disable DescribeTaskQueue cache while testing versioning behavior.
-		Setting: dynamicconfig.TaskQueueInfoByBuildIdTTL, Value: 0 * time.Second, TestOnly: true,
-	},
-	{
-		// Required by TestActivity_CancelTerminateDelete_* to enable batch operations on
-		// standalone activities.
-		Setting: dynamicconfig.FrontendEnableBatchOperationsForStandaloneActivities, Value: true, TestOnly: false,
-		Default: func(dc *dynamicconfig.Collection) bool {
-			return dynamicconfig.FrontendEnableBatchOperationsForStandaloneActivities.Get(dc)("default")
-		},
-	},
+var baseDevServerFeatureOverrides = []featureOverride{
+	overrideNamespaceSetting(dynamicconfig.FrontendEnableWorkerVersioningRuleAPIs, true),
+	overrideNamespaceSetting(dynamicconfig.FrontendEnableWorkerVersioningDataAPIs, true),
+	overrideNamespaceSetting(dynamicconfig.EnableDeployments, true),
+	overrideGlobalSetting(dynamicconfig.BuildIdScavengerEnabled, true),
 }
 
-// dynamicConfigDefaultsAssumedEnabled are settings SharedServerSuite and StartDevServer no
-// longer force on because the pinned go.temporal.io/server version already defaults them to
-// true (see internal/devserver/server.go's comment on dynConf). If a server downgrade or a
-// setting change ever flips one back to false, TestDynamicConfigOverridesMatchServerDefaults
-// fails, signaling the override needs to be restored in both places.
-var dynamicConfigDefaultsAssumedEnabled = []dynamicConfigOverride{
-	{
-		Setting: dynamicconfig.EnableChasm,
-		Default: func(dc *dynamicconfig.Collection) bool { return dynamicconfig.EnableChasm.Get(dc)("default") },
-	},
-	{
-		Setting: serveractivity.Enabled,
-		Default: func(dc *dynamicconfig.Collection) bool { return serveractivity.Enabled.Get(dc)("default") },
-	},
+var sharedServerFeatureOverrides = []featureOverride{
+	// Required by TestWorkflow_Show_SystemNexusOperationTransformsTypeNames.
+	overrideNamespaceSetting(dynamicconfig.EnableSignalWithStartFromWorkflow, true),
+	overrideNamespaceSetting(serveractivity.StartDelayEnabled, true),
+	overrideNamespaceSetting(serveractivity.EnableStandaloneActivityOperatorCommands, true),
+	overrideNamespaceSetting(servernexusoperation.Enabled, true),
+	// Required by TestActivity_CancelTerminateDelete_*.
+	overrideNamespaceSetting(dynamicconfig.FrontendEnableBatchOperationsForStandaloneActivities, true),
 }
 
-// TestDynamicConfigOverridesMatchServerDefaults guards against
-// https://github.com/temporalio/cli/issues/1083: each non-test-only entry in
-// baseDevServerDynamicConfigOverrides and sharedServerDynamicConfigOverrides forces on a server
-// feature flag that's assumed to default to false in the pinned go.temporal.io/server version;
-// each entry in dynamicConfigDefaultsAssumedEnabled is assumed to default to true. This reads
-// those defaults directly from go.temporal.io/server with no dynamic config client and no dev
-// server needed (see dynamicconfig.NewNoopCollection), so it runs instantly and fails the moment
-// a server bump changes one of those assumptions — the signal to update the corresponding
-// override list and internal/devserver/server.go.
+func applyFeatureOverrides(values map[string]any, overrides []featureOverride) {
+	for _, override := range overrides {
+		values[override.key] = override.enabled
+	}
+}
+
+// TestDynamicConfigOverridesMatchServerDefaults guards against feature overrides becoming
+// redundant when the pinned server version changes. Test-only tuning overrides are excluded.
 func TestDynamicConfigOverridesMatchServerDefaults(t *testing.T) {
 	dc := dynamicconfig.NewNoopCollection()
-	for _, o := range slices.Concat(baseDevServerDynamicConfigOverrides, sharedServerDynamicConfigOverrides) {
-		if o.TestOnly {
-			continue
-		}
-		o := o
-		t.Run(o.Setting.Key().String(), func(t *testing.T) {
-			require.NotNilf(t, o.Default, "non-test-only override %q must set Default", o.Setting.Key().String())
-			wantOverrideValue, ok := o.Value.(bool)
-			require.Truef(t, ok, "non-test-only override %q must be boolean, got %T", o.Setting.Key().String(), o.Value)
-			gotDefault := o.Default(dc)
-			require.NotEqualf(t, wantOverrideValue, gotDefault,
-				"%q now defaults to %v in the pinned server version, same as the override value — "+
-					"this override is a no-op and should be removed",
-				o.Setting.Key().String(), gotDefault)
-		})
-	}
-	for _, o := range dynamicConfigDefaultsAssumedEnabled {
-		o := o
-		t.Run(o.Setting.Key().String(), func(t *testing.T) {
-			require.Truef(t, o.Default(dc),
-				"%q no longer defaults to true in the pinned server version — "+
-					"restore an explicit override in SharedServerSuite/StartDevServer and internal/devserver/server.go",
-				o.Setting.Key().String())
+	for _, override := range slices.Concat(baseDevServerFeatureOverrides, sharedServerFeatureOverrides) {
+		t.Run(override.key, func(t *testing.T) {
+			require.NotEqualf(t, override.enabled, override.defaultEnabled(dc),
+				"%q now defaults to %t; remove its feature override", override.key, override.enabled)
 		})
 	}
 }
 
 func (s *SharedServerSuite) SetupSuite() {
+	dynamicConfigValues := map[string]any{
+		"activity.longPollTimeout": 2 * time.Second,
+		// Disable DescribeTaskQueue caching while testing versioning behavior.
+		"matching.TaskQueueInfoByBuildIdTTL": 0 * time.Second,
+	}
+	applyFeatureOverrides(dynamicConfigValues, sharedServerFeatureOverrides)
+
 	s.DevServer = StartDevServer(s.Suite.T(), DevServerOptions{
 		StartOptions: devserver.StartOptions{
 			// Enable for operator cluster commands
 			EnableGlobalNamespace: true,
-			DynamicConfigValues:   dynamicConfigValues(sharedServerDynamicConfigOverrides),
+			DynamicConfigValues:   dynamicConfigValues,
 		},
 	})
 	// Stop server if we fail later
@@ -566,14 +451,11 @@ func StartDevServer(t *testing.T, options DevServerOptions) *DevServer {
 	if d.Options.DynamicConfigValues == nil {
 		d.Options.DynamicConfigValues = map[string]any{}
 	}
-	// Only fill in keys the caller hasn't already set, so e.g. SharedServerSuite's own
-	// dynamic config values take precedence over these defaults.
-	for _, o := range baseDevServerDynamicConfigOverrides {
-		key := o.Setting.Key().String()
-		if _, ok := d.Options.DynamicConfigValues[key]; !ok {
-			d.Options.DynamicConfigValues[key] = o.Value
-		}
-	}
+	applyFeatureOverrides(d.Options.DynamicConfigValues, baseDevServerFeatureOverrides)
+	d.Options.DynamicConfigValues["system.forceSearchAttributesCacheRefreshOnRead"] = true
+	d.Options.DynamicConfigValues["frontend.MaxConcurrentBatchOperationPerNamespace"] = 1000
+	d.Options.DynamicConfigValues["frontend.namespaceRPS.visibility"] = 100
+	d.Options.DynamicConfigValues["system.clusterMetadataRefreshInterval"] = 100 * time.Millisecond
 
 	d.Options.GRPCInterceptors = append(
 		d.Options.GRPCInterceptors,

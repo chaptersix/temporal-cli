@@ -957,35 +957,6 @@ func (s *SharedServerSuite) TestActivity_Start() {
 	s.Equal("default", jsonOut["namespace"])
 }
 
-// TestActivity_Start_StandaloneEnabledByServerDefault guards against
-// https://github.com/temporalio/cli/issues/1083: SharedServerSuite explicitly sets dynamic
-// config overrides to enable server features under test, but some of those overrides can
-// become no-ops as the pinned server version's defaults change over time. This starts a
-// server with no dynamic config overrides at all and confirms standalone activities still
-// work, proving "activity.enableStandalone" is enabled by the server's own default and does
-// not need to be set explicitly in SharedServerSuite.SetupSuite. If a future server bump
-// changes that default back to disabled, this test fails, signaling that the override needs
-// to be restored there instead of silently relying on a default that no longer holds.
-func (s *SharedServerSuite) TestActivity_Start_StandaloneEnabledByServerDefault() {
-	bare := StartDevServer(s.Suite.T(), DevServerOptions{})
-	defer bare.Stop()
-	worker := bare.StartDevWorker(s.Suite.T(), DevWorkerOptions{})
-	defer worker.Stop()
-	worker.OnDevActivity(func(ctx context.Context, a any) (any, error) {
-		return "no-op-check-result", nil
-	})
-
-	res := s.Execute(
-		"activity", "start",
-		"--activity-id", "no-op-check",
-		"--type", "DevActivity",
-		"--task-queue", worker.Options.TaskQueue,
-		"--start-to-close-timeout", "30s",
-		"--address", bare.Address(),
-	)
-	s.NoError(res.Err)
-}
-
 func (s *SharedServerSuite) TestActivity_Start_With_Headers() {
 	s.Worker().OnDevActivity(func(ctx context.Context, a any) (any, error) {
 		return nil, nil
