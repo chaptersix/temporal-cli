@@ -271,10 +271,7 @@ var sharedServerFeatureOverrides = []featureOverride{
 	// Required by TestWorkflow_Show_SystemNexusOperationTransformsTypeNames.
 	overrideNamespaceSetting(dynamicconfig.EnableSignalWithStartFromWorkflow, true),
 	overrideNamespaceSetting(serveractivity.StartDelayEnabled, true),
-	overrideNamespaceSetting(serveractivity.EnableStandaloneActivityOperatorCommands, true),
 	overrideNamespaceSetting(servernexusoperation.Enabled, true),
-	// Required by TestActivity_CancelTerminateDelete_*.
-	overrideNamespaceSetting(dynamicconfig.FrontendEnableBatchOperationsForStandaloneActivities, true),
 }
 
 func applyFeatureOverrides(values map[string]any, overrides []featureOverride) {
