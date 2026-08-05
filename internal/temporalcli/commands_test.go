@@ -26,6 +26,9 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
+	serveractivity "go.temporal.io/server/chasm/lib/activity"
+	servernexusoperation "go.temporal.io/server/chasm/lib/nexusoperation"
+	"go.temporal.io/server/common/dynamicconfig"
 	"google.golang.org/grpc"
 )
 
@@ -232,9 +235,13 @@ type SharedServerSuite struct {
 // dynamicConfigOverride is one dynamic config value a test dev server forces on, either as part
 // of every dev server started via StartDevServer (see baseDevServerDynamicConfigOverrides) or
 // just the shared one used by SharedServerSuite (see sharedServerDynamicConfigOverrides).
+//
+// Setting references the real dynamicconfig.GenericSetting from go.temporal.io/server (e.g.
+// dynamicconfig.EnableChasm, serveractivity.Enabled) rather than a raw string key, so a key that
+// gets renamed or removed upstream is a compile error here instead of a silently no-op override.
 type dynamicConfigOverride struct {
-	Key   string
-	Value any
+	Setting dynamicconfig.GenericSetting
+	Value   any
 	// TestOnly is true for values that only make sense in a test environment (relaxed rate
 	// limits, disabled caching, shortened timeouts) and would never become a server default.
 	//
@@ -251,7 +258,7 @@ type dynamicConfigOverride struct {
 func dynamicConfigValues(overrides []dynamicConfigOverride) map[string]any {
 	values := make(map[string]any, len(overrides))
 	for _, o := range overrides {
-		values[o.Key] = o.Value
+		values[o.Setting.Key().String()] = o.Value
 	}
 	return values
 }
@@ -260,31 +267,31 @@ func dynamicConfigValues(overrides []dynamicConfigOverride) map[string]any {
 // StartDevServer, applied only where the caller hasn't already set that key (see StartDevServer).
 var baseDevServerDynamicConfigOverrides = []dynamicConfigOverride{
 	{
-		Key: "system.forceSearchAttributesCacheRefreshOnRead", Value: true, TestOnly: false,
+		Setting: dynamicconfig.ForceSearchAttributesCacheRefreshOnRead, Value: true, TestOnly: false,
 	},
 	{
-		Key: "frontend.workerVersioningRuleAPIs", Value: true, TestOnly: false,
+		Setting: dynamicconfig.FrontendEnableWorkerVersioningRuleAPIs, Value: true, TestOnly: false,
 	},
 	{
-		Key: "frontend.workerVersioningDataAPIs", Value: true, TestOnly: false,
+		Setting: dynamicconfig.FrontendEnableWorkerVersioningDataAPIs, Value: true, TestOnly: false,
 	},
 	{
-		Key: "system.enableDeployments", Value: true, TestOnly: false,
+		Setting: dynamicconfig.EnableDeployments, Value: true, TestOnly: false,
 	},
 	{
-		Key: "worker.buildIdScavengerEnabled", Value: true, TestOnly: false,
+		Setting: dynamicconfig.BuildIdScavengerEnabled, Value: true, TestOnly: false,
 	},
 	{
 		// Raise the default per-namespace concurrent/RPS limits so batch and namespace-heavy
 		// tests aren't rate limited.
-		Key: "frontend.MaxConcurrentBatchOperationPerNamespace", Value: 1000, TestOnly: true,
+		Setting: dynamicconfig.FrontendMaxConcurrentBatchOperationPerNamespace, Value: 1000, TestOnly: true,
 	},
 	{
-		Key: "frontend.namespaceRPS.visibility", Value: 100, TestOnly: true,
+		Setting: dynamicconfig.FrontendMaxNamespaceVisibilityRPSPerInstance, Value: 100, TestOnly: true,
 	},
 	{
 		// Shorten cluster metadata refresh so multi-cluster tests don't wait a full minute.
-		Key: "system.clusterMetadataRefreshInterval", Value: 100 * time.Millisecond, TestOnly: true,
+		Setting: dynamicconfig.ClusterMetadataRefreshInterval, Value: 100 * time.Millisecond, TestOnly: true,
 	},
 }
 
@@ -292,34 +299,34 @@ var sharedServerDynamicConfigOverrides = []dynamicConfigOverride{
 	{
 		// Allow a high rate of change to namespaces, particularly for the task-queue command
 		// tests.
-		Key: "frontend.namespaceRPS.visibility", Value: 10000, TestOnly: true,
+		Setting: dynamicconfig.FrontendMaxNamespaceVisibilityRPSPerInstance, Value: 10000, TestOnly: true,
 	},
 	{
 		// Required by TestWorkflow_Show_SystemNexusOperationTransformsTypeNames to schedule a
 		// SignalWithStartWorkflowExecution Nexus operation against the __temporal_system
 		// endpoint from inside a workflow.
-		Key: "history.enableSignalWithStartFromWorkflow", Value: true, TestOnly: false,
+		Setting: dynamicconfig.EnableSignalWithStartFromWorkflow, Value: true, TestOnly: false,
 	},
 	{
-		Key: "activity.startDelayEnabled", Value: true, TestOnly: false,
+		Setting: serveractivity.StartDelayEnabled, Value: true, TestOnly: false,
 	},
 	{
-		Key: "history.enableStandaloneActivityOperatorCommands", Value: true, TestOnly: false,
+		Setting: serveractivity.EnableStandaloneActivityOperatorCommands, Value: true, TestOnly: false,
 	},
 	{
-		Key: "activity.longPollTimeout", Value: 2 * time.Second, TestOnly: true,
+		Setting: serveractivity.LongPollTimeout, Value: 2 * time.Second, TestOnly: true,
 	},
 	{
-		Key: "nexusoperation.enableStandalone", Value: true, TestOnly: false,
+		Setting: servernexusoperation.Enabled, Value: true, TestOnly: false,
 	},
 	{
 		// Disable DescribeTaskQueue cache while testing versioning behavior.
-		Key: "matching.TaskQueueInfoByBuildIdTTL", Value: 0 * time.Second, TestOnly: true,
+		Setting: dynamicconfig.TaskQueueInfoByBuildIdTTL, Value: 0 * time.Second, TestOnly: true,
 	},
 	{
 		// Required by TestActivity_CancelTerminateDelete_* to enable batch operations on
 		// standalone activities.
-		Key: "frontend.enableBatchOperationsForStandaloneActivities", Value: true, TestOnly: false,
+		Setting: dynamicconfig.FrontendEnableBatchOperationsForStandaloneActivities, Value: true, TestOnly: false,
 	},
 }
 
@@ -475,8 +482,9 @@ func StartDevServer(t *testing.T, options DevServerOptions) *DevServer {
 	// Only fill in keys the caller hasn't already set, so e.g. SharedServerSuite's own
 	// dynamic config values take precedence over these defaults.
 	for _, o := range baseDevServerDynamicConfigOverrides {
-		if _, ok := d.Options.DynamicConfigValues[o.Key]; !ok {
-			d.Options.DynamicConfigValues[o.Key] = o.Value
+		key := o.Setting.Key().String()
+		if _, ok := d.Options.DynamicConfigValues[key]; !ok {
+			d.Options.DynamicConfigValues[key] = o.Value
 		}
 	}
 
