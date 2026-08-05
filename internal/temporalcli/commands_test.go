@@ -229,8 +229,10 @@ type SharedServerSuite struct {
 	lazyWorkerLock sync.Mutex
 }
 
-// sharedServerDynamicConfigOverride is one dynamic config value SharedServerSuite forces on.
-type sharedServerDynamicConfigOverride struct {
+// dynamicConfigOverride is one dynamic config value a test dev server forces on, either as part
+// of every dev server started via StartDevServer (see baseDevServerDynamicConfigOverrides) or
+// just the shared one used by SharedServerSuite (see sharedServerDynamicConfigOverrides).
+type dynamicConfigOverride struct {
 	Key   string
 	Value any
 	// TestOnly is true for values that only make sense in a test environment (relaxed rate
@@ -246,7 +248,47 @@ type sharedServerDynamicConfigOverride struct {
 	TestOnly bool
 }
 
-var sharedServerDynamicConfigOverrides = []sharedServerDynamicConfigOverride{
+func dynamicConfigValues(overrides []dynamicConfigOverride) map[string]any {
+	values := make(map[string]any, len(overrides))
+	for _, o := range overrides {
+		values[o.Key] = o.Value
+	}
+	return values
+}
+
+// baseDevServerDynamicConfigOverrides are forced on for every dev server started via
+// StartDevServer, applied only where the caller hasn't already set that key (see StartDevServer).
+var baseDevServerDynamicConfigOverrides = []dynamicConfigOverride{
+	{
+		Key: "system.forceSearchAttributesCacheRefreshOnRead", Value: true, TestOnly: false,
+	},
+	{
+		Key: "frontend.workerVersioningRuleAPIs", Value: true, TestOnly: false,
+	},
+	{
+		Key: "frontend.workerVersioningDataAPIs", Value: true, TestOnly: false,
+	},
+	{
+		Key: "system.enableDeployments", Value: true, TestOnly: false,
+	},
+	{
+		Key: "worker.buildIdScavengerEnabled", Value: true, TestOnly: false,
+	},
+	{
+		// Raise the default per-namespace concurrent/RPS limits so batch and namespace-heavy
+		// tests aren't rate limited.
+		Key: "frontend.MaxConcurrentBatchOperationPerNamespace", Value: 1000, TestOnly: true,
+	},
+	{
+		Key: "frontend.namespaceRPS.visibility", Value: 100, TestOnly: true,
+	},
+	{
+		// Shorten cluster metadata refresh so multi-cluster tests don't wait a full minute.
+		Key: "system.clusterMetadataRefreshInterval", Value: 100 * time.Millisecond, TestOnly: true,
+	},
+}
+
+var sharedServerDynamicConfigOverrides = []dynamicConfigOverride{
 	{
 		// Allow a high rate of change to namespaces, particularly for the task-queue command
 		// tests.
@@ -282,15 +324,11 @@ var sharedServerDynamicConfigOverrides = []sharedServerDynamicConfigOverride{
 }
 
 func (s *SharedServerSuite) SetupSuite() {
-	dynamicConfigValues := make(map[string]any, len(sharedServerDynamicConfigOverrides))
-	for _, o := range sharedServerDynamicConfigOverrides {
-		dynamicConfigValues[o.Key] = o.Value
-	}
 	s.DevServer = StartDevServer(s.Suite.T(), DevServerOptions{
 		StartOptions: devserver.StartOptions{
 			// Enable for operator cluster commands
 			EnableGlobalNamespace: true,
-			DynamicConfigValues:   dynamicConfigValues,
+			DynamicConfigValues:   dynamicConfigValues(sharedServerDynamicConfigOverrides),
 		},
 	})
 	// Stop server if we fail later
@@ -434,17 +472,13 @@ func StartDevServer(t *testing.T, options DevServerOptions) *DevServer {
 	if d.Options.DynamicConfigValues == nil {
 		d.Options.DynamicConfigValues = map[string]any{}
 	}
-	d.Options.DynamicConfigValues["system.forceSearchAttributesCacheRefreshOnRead"] = true
-	d.Options.DynamicConfigValues["frontend.workerVersioningRuleAPIs"] = true
-	d.Options.DynamicConfigValues["frontend.workerVersioningDataAPIs"] = true
-	d.Options.DynamicConfigValues["frontend.workerVersioningWorkflowAPIs"] = true
-	d.Options.DynamicConfigValues["system.enableDeployments"] = true
-	d.Options.DynamicConfigValues["system.enableDeploymentVersions"] = true
-	d.Options.DynamicConfigValues["worker.buildIdScavengerEnabled"] = true
-	d.Options.DynamicConfigValues["frontend.enableUpdateWorkflowExecution"] = true
-	d.Options.DynamicConfigValues["frontend.MaxConcurrentBatchOperationPerNamespace"] = 1000
-	d.Options.DynamicConfigValues["frontend.namespaceRPS.visibility"] = 100
-	d.Options.DynamicConfigValues["system.clusterMetadataRefreshInterval"] = 100 * time.Millisecond
+	// Only fill in keys the caller hasn't already set, so e.g. SharedServerSuite's own
+	// dynamic config values take precedence over these defaults.
+	for _, o := range baseDevServerDynamicConfigOverrides {
+		if _, ok := d.Options.DynamicConfigValues[o.Key]; !ok {
+			d.Options.DynamicConfigValues[o.Key] = o.Value
+		}
+	}
 
 	d.Options.GRPCInterceptors = append(
 		d.Options.GRPCInterceptors,
