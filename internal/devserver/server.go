@@ -64,9 +64,13 @@ type namespaceFeatureOverride struct {
 	enabled bool
 }
 
+// startDevServerFeatureOverrides contains temporary feature-specific dynamic config for
+// `temporal server start-dev`. Add boolean feature overrides here instead of assigning them
+// inline in buildServerOptions so TestStartDevServerFeatureOverridesMatchServerDefaults can
+// detect when an override becomes redundant.
+//
 // These values are applied without constraints and therefore affect every namespace.
-// NamespaceBoolSetting describes the server setting's lookup precedence, not the scope
-// of the CLI override.
+// NamespaceBoolSetting describes the server setting's lookup precedence, not override scope.
 var startDevServerFeatureOverrides = []namespaceFeatureOverride{
 	{setting: activity.EnableStandaloneActivityOperatorCommands, enabled: true},
 	{setting: dynamicconfig.FrontendEnableBatchOperationsForStandaloneActivities, enabled: true},
@@ -258,7 +262,7 @@ func (s *StartOptions) buildServerOptions() ([]temporal.ServerOption, *slog.Leve
 
 	// CHASM (dynamicconfig.EnableChasm) and SAA (activity.Enabled) are on by default as of
 	// server v1.32, so they no longer need to be forced on here.
-	// Apply the remaining temporary feature overrides from the list validated by unit tests.
+	// Feature-specific dynamic config must come from the validated list above, not be set inline.
 	for _, override := range startDevServerFeatureOverrides {
 		dynConf[override.setting.Key()] = override.enabled
 	}

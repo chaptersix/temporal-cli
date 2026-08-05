@@ -260,14 +260,20 @@ func overrideNamespaceSetting(setting dynamicconfig.NamespaceBoolSetting, enable
 	}
 }
 
-var baseDevServerFeatureOverrides = []featureOverride{
+// allTestDevServerFeatureOverrides are applied by StartDevServer to every test server,
+// including SharedServerSuite and its auxiliary standby clusters. Add broadly required
+// boolean feature overrides here instead of assigning them inline in StartDevServer.
+var allTestDevServerFeatureOverrides = []featureOverride{
 	overrideNamespaceSetting(dynamicconfig.FrontendEnableWorkerVersioningRuleAPIs, true),
 	overrideNamespaceSetting(dynamicconfig.FrontendEnableWorkerVersioningDataAPIs, true),
 	overrideNamespaceSetting(dynamicconfig.EnableDeployments, true),
 	overrideGlobalSetting(dynamicconfig.BuildIdScavengerEnabled, true),
 }
 
-var sharedServerFeatureOverrides = []featureOverride{
+// sharedSuiteFeatureOverrides are applied only to the singleton server used by
+// SharedServerSuite. Add boolean feature overrides needed only by that suite here instead
+// of assigning them inline in SetupSuite.
+var sharedSuiteFeatureOverrides = []featureOverride{
 	// Required by TestWorkflow_Show_SystemNexusOperationTransformsTypeNames.
 	overrideNamespaceSetting(dynamicconfig.EnableSignalWithStartFromWorkflow, true),
 	overrideNamespaceSetting(serveractivity.StartDelayEnabled, true),
@@ -284,7 +290,7 @@ func applyFeatureOverrides(values map[string]any, overrides []featureOverride) {
 // redundant when the pinned server version changes. Test-only tuning overrides are excluded.
 func TestDynamicConfigOverridesMatchServerDefaults(t *testing.T) {
 	dc := dynamicconfig.NewNoopCollection()
-	for _, override := range slices.Concat(baseDevServerFeatureOverrides, sharedServerFeatureOverrides) {
+	for _, override := range slices.Concat(allTestDevServerFeatureOverrides, sharedSuiteFeatureOverrides) {
 		t.Run(override.key, func(t *testing.T) {
 			require.NotEqualf(t, override.enabled, override.defaultEnabled(dc),
 				"%q now defaults to %t; remove its feature override", override.key, override.enabled)
@@ -298,7 +304,7 @@ func (s *SharedServerSuite) SetupSuite() {
 		// Disable DescribeTaskQueue caching while testing versioning behavior.
 		"matching.TaskQueueInfoByBuildIdTTL": 0 * time.Second,
 	}
-	applyFeatureOverrides(dynamicConfigValues, sharedServerFeatureOverrides)
+	applyFeatureOverrides(dynamicConfigValues, sharedSuiteFeatureOverrides)
 
 	s.DevServer = StartDevServer(s.Suite.T(), DevServerOptions{
 		StartOptions: devserver.StartOptions{
@@ -448,7 +454,8 @@ func StartDevServer(t *testing.T, options DevServerOptions) *DevServer {
 	if d.Options.DynamicConfigValues == nil {
 		d.Options.DynamicConfigValues = map[string]any{}
 	}
-	applyFeatureOverrides(d.Options.DynamicConfigValues, baseDevServerFeatureOverrides)
+	// Feature-specific dynamic config must come from the validated list above, not be set inline.
+	applyFeatureOverrides(d.Options.DynamicConfigValues, allTestDevServerFeatureOverrides)
 	d.Options.DynamicConfigValues["system.forceSearchAttributesCacheRefreshOnRead"] = true
 	d.Options.DynamicConfigValues["frontend.MaxConcurrentBatchOperationPerNamespace"] = 1000
 	d.Options.DynamicConfigValues["frontend.namespaceRPS.visibility"] = 100
